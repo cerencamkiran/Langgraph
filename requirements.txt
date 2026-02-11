@@ -1,0 +1,4 @@
+langgraph==0.2.60
+langchain-core==0.3.36
+pydantic==2.10.6
+typing-extensions==4.12.2
