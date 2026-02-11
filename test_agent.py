@@ -1,11 +1,12 @@
 """
-Test Suite for Topraq Irrigation Agent
+Integration-style test suite for irrigation decision agent.
 
-Demonstrates:
-1. Success case - Normal operation
-2. Failure cases - Sensor timeout, hardware error, field not found
-3. Retry mechanism validation
-4. Edge cases
+Covers:
+- Success case
+- Field not found
+- Sensor timeout + retry
+- Hardware corruption
+- Multi-field validation
 """
 
 import random
@@ -14,7 +15,6 @@ import json
 
 
 class TestRunner:
-    """Comprehensive test suite for irrigation agent"""
     
     def __init__(self):
         self.agent = IrrigationAgent(max_sensor_retries=3)
