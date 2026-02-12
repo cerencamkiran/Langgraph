@@ -503,6 +503,5 @@ workflow.add_edge("validate", "weather_check")
 
 - [LangGraph Documentation](https://langchain-ai.github.io/langgraph/)
 - [Pydantic Models](https://docs.pydantic.dev/)
-- [Production ML Systems](https://martinfowler.com/articles/cd4ml.html)
 
 ---
