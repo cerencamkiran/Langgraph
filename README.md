@@ -420,8 +420,7 @@ class IrrigationAgent:
 ```
 
 ### DecisionOutput Schema
-
-```python
+```json
 {
     "field_id": int,
     "decision": "IRRIGATE" | "DO_NOT_IRRIGATE" | "MAINTENANCE_REQUIRED",
@@ -433,12 +432,13 @@ class IrrigationAgent:
     "errors": [str]
 }
 ```
----
+
 
 ## Run
 
 ```bash
 pip install -r requirements.txt
+
 python irrigation_agent.py 12
 
 python test_agent.py
