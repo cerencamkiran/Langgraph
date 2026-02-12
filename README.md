@@ -10,9 +10,9 @@ The agent determines whether a field should be irrigated.
 
 It performs the following steps:
 
-1.  Retrieve field information\
-2.  Fetch soil moisture data\
-3.  Validate the reading\
+1.  Retrieve field information
+2.  Fetch soil moisture data
+3.  Validate the reading
 4.  Produce a structured JSON decision
 ------------------------------------------------------------------------
 
