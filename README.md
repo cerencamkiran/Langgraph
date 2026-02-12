@@ -420,7 +420,7 @@ class IrrigationAgent:
 ```
 
 ### DecisionOutput Schema
-```json
+```python
 {
     "field_id": int,
     "decision": "IRRIGATE" | "DO_NOT_IRRIGATE" | "MAINTENANCE_REQUIRED",
