@@ -82,7 +82,7 @@ It performs the following steps:
 
 ---
 
-## 🔧 Technical Implementation
+## Technical Implementation
 
 ### Core Components
 
@@ -370,26 +370,6 @@ class DecisionOutput(BaseModel):
 - No ambiguity (structured data)
 - Downstream processing (alerts, reports)
 
----
-
-### Scaling to Production
-
-**Deployment Options:**
-```
-Option 1: API Service
-  ├── FastAPI endpoint
-  ├── POST /decide {"field_id": 12}
-  └── Returns DecisionOutput JSON
-
-Option 2: Event-Driven
-  ├── Kafka/RabbitMQ consumer
-  ├── Processes field events
-  └── Publishes decisions to topic
-
-Option 3: Scheduled Jobs
-  ├── Kubernetes CronJob
-  ├── Runs every 30 minutes
-  └── Batch processes all fields
 ```
 
 ## Safety Guarantees
@@ -453,55 +433,3 @@ class IrrigationAgent:
     "errors": [str]
 }
 ```
-
----
-
-## Contributing
-
-### Adding New Fields
-
-```python
-# In MockDatabase.FIELDS
-99: {
-    "crop_type": CropType.WHEAT,
-    "min_moisture": 25.0,
-    "max_moisture": 45.0,
-    "optimal_moisture": 35.0,
-    "soil_type": "loamy"
-}
-
-# In MockSensorNetwork.CURRENT_READINGS
-99: 42.5  # Current moisture %
-```
-
-### Adding New Sensors
-
-```python
-def get_soil_ph(field_id: int) -> float | None:
-    """New sensor type"""
-    # Implement with same error handling pattern
-    pass
-```
-
-### Extending Decision Logic
-
-```python
-# Add new node to graph
-def check_weather_forecast(state: AgentState) -> AgentState:
-    # Fetch weather API
-    # Adjust decision based on rain forecast
-    pass
-
-# Wire into graph
-workflow.add_node("weather_check", check_weather_forecast)
-workflow.add_edge("validate", "weather_check")
-```
-
----
-
-### Further Reading
-
-- [LangGraph Documentation](https://langchain-ai.github.io/langgraph/)
-- [Pydantic Models](https://docs.pydantic.dev/)
-
----
