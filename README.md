@@ -106,7 +106,7 @@ class AgentState(TypedDict):
 - Clear error propagation
 - Debuggable execution paths
 
-#### 2. **Tool Layer** (Mocked but Production-Ready)
+#### 2. **Tool Layer**
 
 **MockDatabase**
 - Simulates field information storage
@@ -128,7 +128,7 @@ class AgentState(TypedDict):
 | Hardware Error | Reading `< 0` or `> 100` | Immediate escalation | MAINTENANCE_REQUIRED |
 | Max Retries | Attempts `>= 3` | No further retries | MAINTENANCE_REQUIRED |
 
-#### 4. **Decision Logic** (Pure Logic, No LLM Guessing)
+#### 4. **Decision Logic** 
 
 ```python
 if moisture < min_threshold:
@@ -143,7 +143,7 @@ else:
         decision = DO_NOT_IRRIGATE  # Maintain
 ```
 
-**Critical: NO LLM INVOLVEMENT IN DECISION**
+**NO LLM INVOLVEMENT IN DECISION**
 - All decisions based on explicit comparisons
 - No probabilistic reasoning
 - Deterministic outcomes for same inputs
@@ -270,8 +270,7 @@ workflow.add_conditional_edges(
 )
 ```
 
-**Why This Works:**
-- LangGraph supports cycles (retry loops)
+- LangGraph supports cycles
 - State carries retry counter
 - Automatic loop termination via counter
 
@@ -288,7 +287,6 @@ if reading < 0 or reading > 100:
     }
 ```
 
-**Safe Fallback:**
 - Never attempt to use impossible data
 - Immediate escalation to maintenance
 - Preserves error details for debugging
@@ -320,8 +318,6 @@ if field_info is None:
 
 ## Design Decisions
 
-### Why LangGraph vs. Plain Python?
-
 | Aspect | Plain Python | LangGraph |
 |--------|--------------|-----------|
 | State Management | Manual dict passing | Built-in StateGraph |
@@ -330,9 +326,7 @@ if field_info is None:
 | Debuggability | Print statements | Graph visualization |
 | Extensibility | Refactor functions | Add nodes/edges |
 
-**Verdict:** LangGraph provides production-grade orchestration with minimal boilerplate.
-
-### Why Pydantic Models?
+### Pydantic Models
 
 ```python
 class DecisionOutput(BaseModel):
@@ -342,13 +336,10 @@ class DecisionOutput(BaseModel):
     # ... validation built-in
 ```
 
-**Benefits:**
 - Runtime type checking
 - JSON serialization (API-ready)
 - Self-documenting schema
 - IDE autocomplete support
-
-### Why Strict JSON Output?
 
 **Agent Output Format:**
 ```json
@@ -364,11 +355,6 @@ class DecisionOutput(BaseModel):
 }
 ```
 
-**Rationale:**
-- System integration (API contracts)
-- Logging and auditing
-- No ambiguity (structured data)
-- Downstream processing (alerts, reports)
 
 ```
 
@@ -419,7 +405,7 @@ class IrrigationAgent:
         """Returns JSON-serializable decision"""
 ```
 
-### DecisionOutput Schema
+### Decision Output Schema
 ```python
 {
     "field_id": int,
