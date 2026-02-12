@@ -3,12 +3,13 @@ Fault-Tolerant Irrigation Decision Agent
 
 Stateful irrigation decision system built with LangGraph.
 
-Enhancements:
-- Added comprehensive logging
-- Timestamp tracking for sensor readings
-- Dynamic confidence calculation
-- Better error messages
+Features:
+- Deterministic tool-driven logic
+- Explicit retry mechanism
+- Safe fallback state (MAINTENANCE_REQUIRED)
+- Structured JSON output
 """
+
 
 import random
 import logging
