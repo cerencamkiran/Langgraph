@@ -2,9 +2,6 @@
 
 A stateful decision agent built with LangGraph.
 
-This project demonstrates deterministic, tool-based reasoning with retry
-handling and safe fallback behavior.
-
 ------------------------------------------------------------------------
 
 ## Overview
