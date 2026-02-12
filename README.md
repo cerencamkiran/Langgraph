@@ -34,8 +34,8 @@ It performs the following steps:
 │         v                     v                     v       │
 │  ┌──────────────────────────────────────────────────────┐   │
 │  │              Agent State (TypedDict)                 │   │
-│  │  - field_id, field_info, moisture_reading            │    │
-│  │  - decision, errors, retry_count, stage              │    │
+│  │  - field_id, field_info, moisture_reading            │   │
+│  │  - decision, errors, retry_count, stage              │   │
 │  └──────────────────────────────────────────────────────┘   │
 └─────────────────────────────────────────────────────────────┘
          │                    │                    │
