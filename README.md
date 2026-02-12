@@ -355,9 +355,6 @@ class DecisionOutput(BaseModel):
 }
 ```
 
-
-```
-
 ## Safety Guarantees
 
 ### Critical Safety Rules
