@@ -1,5 +1,5 @@
 """
-Fault-Tolerant Irrigation Decision Agent (Enhanced Version)
+Fault-Tolerant Irrigation Decision Agent
 
 Stateful irrigation decision system built with LangGraph.
 
