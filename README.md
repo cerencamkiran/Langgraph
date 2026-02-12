@@ -1,35 +1,41 @@
-# Topraq Irrigation Agent - LangGraph Implementation
+# Fault-Tolerant Irrigation Decision Agent
 
-> Production-grade fault-tolerant irrigation decision system using LangGraph for state orchestration
+A stateful decision agent built with LangGraph.
 
-## 🎯 Mission Statement
+This project demonstrates deterministic, tool-based reasoning with retry
+handling and safe fallback behavior.
 
-Build a production-ready decision agent that controls physical irrigation infrastructure. The agent must:
-- Make tool-based decisions (never guess from training data)
-- Handle sensor failures with retry logic
-- Implement fault tolerance and safe fallbacks
-- Provide strict JSON output for system integration
+------------------------------------------------------------------------
 
----
+## Overview
 
-## 🏗️ Architecture Overview
+The agent determines whether a field should be irrigated.
 
-### High-Level Design
+It performs the following steps:
+
+1.  Retrieve field information\
+2.  Fetch soil moisture data\
+3.  Validate the reading\
+4.  Produce a structured JSON decision
+------------------------------------------------------------------------
+
+## Architecture
+
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │                    Irrigation Agent                         │
-│                                                              │
-│  ┌──────────────┐     ┌──────────────┐     ┌─────────────┐ │
-│  │  LangGraph   │────>│ State Graph  │────>│   Decision  │ │
-│  │ Orchestrator │     │  Execution   │     │   Output    │ │
-│  └──────────────┘     └──────────────┘     └─────────────┘ │
-│         │                     │                     │        │
-│         v                     v                     v        │
+│                                                             │
+│  ┌──────────────┐     ┌──────────────┐     ┌─────────────┐  │
+│  │  LangGraph   │────>│ State Graph  │────>│   Decision  │  │
+│  │ Orchestrator │     │  Execution   │     │   Output    │  │
+│  └──────────────┘     └──────────────┘     └─────────────┘  │
+│         │                     │                     │       │
+│         v                     v                     v       │
 │  ┌──────────────────────────────────────────────────────┐   │
 │  │              Agent State (TypedDict)                 │   │
-│  │  - field_id, field_info, moisture_reading           │   │
-│  │  - decision, errors, retry_count, stage             │   │
+│  │  - field_id, field_info, moisture_reading            │    │
+│  │  - decision, errors, retry_count, stage              │    │
 │  └──────────────────────────────────────────────────────┘   │
 └─────────────────────────────────────────────────────────────┘
          │                    │                    │
@@ -63,13 +69,13 @@ Build a production-ready decision agent that controls physical irrigation infras
               │                  │
     ┌─────────┼─────────┐        │
     │         │         │        │
-[Success] [Timeout] [Error]     │
+[Success] [Timeout] [Error]      │ 
     │         │         │        │
     v         v         v        v
-┌────────┐ ┌────┐  ┌────────┐   │
+┌────────┐ ┌────┐  ┌────────┐    │
 │Validate│ │Retry│  │Maint.  │   │
-│& Decide│ │(3x)│  │Required│   │
-└───┬────┘ └──┬─┘  └───┬────┘   │
+│& Decide│ │(3x)│  │Required│    │
+└───┬────┘ └──┬─┘  └───┬────┘    │
     │         │        │         │
     └─────────┴────────┴─────────┘
               │
@@ -147,7 +153,7 @@ else:
 
 ---
 
-## 🚀 Installation & Usage
+## Installation & Usage
 
 ### Prerequisites
 ```bash
@@ -201,7 +207,7 @@ python test_agent.py --interactive
 
 ---
 
-## 🧪 Test Coverage
+## Test Coverage
 
 ### Test Scenarios
 
@@ -235,7 +241,7 @@ Failed: 0
 
 ---
 
-## 🔍 Error Handling Deep Dive
+## Error Handling Deep Dive
 
 ### 1. Sensor Timeout Handling
 
@@ -315,7 +321,7 @@ if field_info is None:
 
 ---
 
-## 🎨 Design Decisions
+## Design Decisions
 
 ### Why LangGraph vs. Plain Python?
 
@@ -369,26 +375,6 @@ class DecisionOutput(BaseModel):
 
 ---
 
-## 🔒 Production Considerations
-
-### What's Production-Ready
-
-✅ **State Management:** Full LangGraph orchestration  
-✅ **Error Handling:** Retry logic + safe fallbacks  
-✅ **Deterministic Logic:** No LLM guessing  
-✅ **Type Safety:** Pydantic models throughout  
-✅ **Observability:** Extensive logging at each stage  
-✅ **Testing:** Comprehensive test suite  
-
-### What Would Need Enhancement
-
-🔧 **Database Layer:** Replace mock with PostgreSQL/MongoDB  
-🔧 **Sensor Integration:** Real IoT device APIs (MQTT, HTTP)  
-🔧 **Monitoring:** Add Prometheus metrics + Grafana dashboards  
-🔧 **Alerting:** Integrate with PagerDuty/Slack for MAINTENANCE_REQUIRED  
-🔧 **Scheduling:** Add cron/Airflow for periodic checks  
-🔧 **Audit Trail:** Store all decisions in immutable log  
-
 ### Scaling to Production
 
 **Deployment Options:**
@@ -409,30 +395,7 @@ Option 3: Scheduled Jobs
   └── Batch processes all fields
 ```
 
----
-
-## 📊 Performance Characteristics
-
-### Timing Breakdown
-
-| Stage | Typical Duration |
-|-------|------------------|
-| Field Lookup | ~10ms (database query) |
-| Sensor Read | ~100ms (network I/O) |
-| Retry (timeout) | +100ms per retry |
-| Validation | <1ms (pure logic) |
-| **Total (Success)** | ~110ms |
-| **Total (3 retries)** | ~310ms |
-
-### Resource Usage
-
-- **Memory:** ~50MB (Python runtime + LangGraph)
-- **CPU:** Negligible (<1% per decision)
-- **Network:** 1 DB query + 1-3 sensor calls
-
----
-
-## 🔐 Safety Guarantees
+## Safety Guarantees
 
 ### Critical Safety Rules
 
@@ -464,7 +427,7 @@ Option 3: Scheduled Jobs
 
 ---
 
-## 📝 API Reference
+## API Reference
 
 ### IrrigationAgent Class
 
@@ -496,7 +459,7 @@ class IrrigationAgent:
 
 ---
 
-## 🤝 Contributing
+## Contributing
 
 ### Adding New Fields
 
@@ -539,21 +502,6 @@ workflow.add_edge("validate", "weather_check")
 
 ---
 
-## 📚 References
-
-### Technologies Used
-
-- **LangGraph 0.2.60** - State graph orchestration
-- **Pydantic 2.10** - Data validation
-- **Python 3.11+** - Core language
-
-### Design Patterns
-
-- **State Machine:** LangGraph StateGraph
-- **Retry Pattern:** Exponential backoff (configurable)
-- **Circuit Breaker:** Max retries before fallback
-- **Fail-Safe:** MAINTENANCE_REQUIRED as default
-
 ### Further Reading
 
 - [LangGraph Documentation](https://langchain-ai.github.io/langgraph/)
@@ -561,28 +509,3 @@ workflow.add_edge("validate", "weather_check")
 - [Production ML Systems](https://martinfowler.com/articles/cd4ml.html)
 
 ---
-
-## 📞 Support
-
-**For issues or questions:**
-- GitHub Issues: [Create Issue]
-- Email: [Engineering Team @ Topraq]
-
-**Submission Checklist:**
-- [x] Source code (Python)
-- [x] README.md (architecture + error handling)
-- [x] Test script (success + failure cases)
-- [x] Requirements.txt
-- [x] Comprehensive documentation
-
----
-
-## 📜 License
-
-Proprietary - Topraq Engineering Challenge 2026
-
----
-
-**Built with ❤️ for the Topraq Engineering Team**
-
-*"In production, there are no second chances. Design for failure."*
