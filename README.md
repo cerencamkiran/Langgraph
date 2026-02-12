@@ -233,7 +233,7 @@ Passed: 5
 Failed: 0
 ===============================================================================
 
-🎉 ALL TESTS PASSED! 🎉
+ALL TESTS PASSED!
 ```
 
 ---
@@ -432,14 +432,3 @@ class IrrigationAgent:
     "errors": [str]
 }
 ```
-
-
-## Run
-
-```bash
-pip install -r requirements.txt
-
-python irrigation_agent.py 12
-
-python test_agent.py
-
