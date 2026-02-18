@@ -37,7 +37,6 @@ class TestRunner:
 
     # ------------------------------------------------------------------
     # Test: Normal Operation
-    # Patch out randomness so the sensor always returns a clean reading.
     # ------------------------------------------------------------------
     def test_normal_operation(self):
         original = MockSensorNetwork.get_soil_moisture
@@ -73,7 +72,6 @@ class TestRunner:
 
     # ------------------------------------------------------------------
     # Test: Sensor Timeout + Retry
-    # Always return None → agent must exhaust retries (max_sensor_retries=3)
     # ------------------------------------------------------------------
     def test_sensor_timeout(self):
         original = MockSensorNetwork.get_soil_moisture
@@ -94,9 +92,6 @@ class TestRunner:
 
     # ------------------------------------------------------------------
     # Test: Hardware Error (impossible sensor value)
-    # -50.0 is physically impossible → agent must flag it clearly.
-    # The error message in irrigation_agent.py must contain "error" or
-    # "impossible" (already fixed in the agent).
     # ------------------------------------------------------------------
     def test_hardware_error(self):
         original = MockSensorNetwork.get_soil_moisture
@@ -121,7 +116,6 @@ class TestRunner:
 
     # ------------------------------------------------------------------
     # Test: Multiple Fields
-    # Patch sensor to avoid flaky random timeouts/errors.
     # ------------------------------------------------------------------
     def test_multiple_fields(self):
         original = MockSensorNetwork.get_soil_moisture
