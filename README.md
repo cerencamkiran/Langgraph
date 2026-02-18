@@ -163,7 +163,7 @@ pip 24.0+
 ```bash
 # Clone repository
 git clone <repository-url>
-cd topraq-irrigation-agent
+cd Langgraph
 
 # Install dependencies
 pip install -r requirements.txt
