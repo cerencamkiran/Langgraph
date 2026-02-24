@@ -1,5 +1,5 @@
 """
-Fault-Tolerant Irrigation Decision Agent — Free LLM (Colab-ready) Edition
+Fault-Tolerant Irrigation Decision Agent — LLM Edition
 
 Graph flow:
                         START
@@ -23,7 +23,7 @@ Graph flow:
 
 - Deterministic decision: tools + thresholds (NO LLM in decision).
 - LLM runs on ALL terminal paths (success or failure) to explain & recommend.
-- Uses a NON-GATED HuggingFace model by default (no HF token needed).
+- Uses a NON-GATED HuggingFace model by default.
 """
 
 import random
@@ -177,7 +177,7 @@ class MockSensorNetwork:
         return reading
 
 # ============================================================================
-# Free LLM Reasoning (NON-GATED HF model) + fallback
+# LLM Reasoning + fallback
 # ============================================================================
 
 # Non-gated, good instruction-following for Colab.
