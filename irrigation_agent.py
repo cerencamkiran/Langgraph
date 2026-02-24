@@ -1,36 +1,62 @@
 """
-Fault-Tolerant Irrigation Decision Agent
+Fault-Tolerant Irrigation Decision Agent — Free LLM (Colab-ready) Edition
 
-Stateful irrigation decision system built with LangGraph.
+Graph flow:
+                        START
+                          │
+                    retrieve_field
+                    /            \
+              [found]          [not found]
+                │                   │
+           fetch_sensor         maintenance_decision
+           /    |    \               │
+      [ok] [retry] [fail]            │
+        │            │               │
+     validate    maintenance_decision│
+        │                 │          │
+        └────────┬─────────┘         │
+                 │                   │
+           llm_reasoning  ◄──────────┘
+      (HF local model + rule-based fallback)
+                 │
+                END
 
-Features:
-- Deterministic tool-driven logic
-- Explicit retry mechanism
-- Safe fallback state (MAINTENANCE_REQUIRED)
-- Structured JSON output
+Key design:
+- EVERY terminal path goes through llm_reasoning (success OR failure).
+- Deterministic decision is ALWAYS tool-driven (no LLM in decision).
+- LLM only generates explanation + recommendation.
+- If HF model can't load (no GPU / memory), rule-based fallback still provides reasoning.
 """
-
 
 import random
 import logging
-from typing import TypedDict, Annotated
-from enum import Enum
 import operator
+from enum import Enum
+from typing import TypedDict, Annotated
 from datetime import datetime
 
-from langgraph.graph import StateGraph, END
 from pydantic import BaseModel, Field
+from langgraph.graph import StateGraph, END
 
-# Configure logging
+# ---------------------------------------------------------------------
+# Fix for some environments where langchain debug attr may be missing.
+# This prevents callback manager init from crashing.
+# ---------------------------------------------------------------------
+try:
+    import langchain  # type: ignore
+    if not hasattr(langchain, "debug"):
+        langchain.debug = False  # type: ignore
+except Exception:
+    pass
+
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 )
 logger = logging.getLogger(__name__)
 
-
 # ============================================================================
-# Models
+# Enums & Models
 # ============================================================================
 
 class IrrigationDecision(str, Enum):
@@ -56,6 +82,14 @@ class FieldInfo(BaseModel):
     soil_type: str
 
 
+class LLMResult(BaseModel):
+    provider: str
+    reasoning: str
+    recommendation: str
+    success: bool
+    error: str | None = None
+
+
 class DecisionOutput(BaseModel):
     field_id: int
     decision: IrrigationDecision
@@ -64,9 +98,15 @@ class DecisionOutput(BaseModel):
     reason: str
     confidence: str
     sensor_attempts: int
+
+    # Free-LLM reasoning fields
+    llm_results: list[dict] = Field(default_factory=list)
+    llm_consensus: str | None = None
+    llm_recommendation: str | None = None
+    llm_providers_used: list[str] = Field(default_factory=list)
+
     timestamp: str = Field(default_factory=lambda: datetime.now().isoformat())
     errors: list[str] = Field(default_factory=list)
-
 
 # ============================================================================
 # Agent State
@@ -78,22 +118,26 @@ class AgentState(TypedDict):
     moisture_reading: float | None
     decision: IrrigationDecision | None
     reason: str
+
     errors: Annotated[list[str], operator.add]
     sensor_attempts: int
     max_sensor_retries: int
     stage: str
 
+    # LLM fields
+    llm_results: list[dict]
+    llm_consensus: str | None
+    llm_recommendation: str | None
+    llm_providers_used: list[str]
 
 # ============================================================================
 # Mock Tools
 # ============================================================================
 
 class MockDatabase:
-    """Simulates field database with logging"""
-
     FIELDS = {
-        1: {"crop_type": CropType.WHEAT, "min_moisture": 25.0, "max_moisture": 45.0, "optimal_moisture": 35.0, "soil_type": "loamy"},
-        2: {"crop_type": CropType.CORN, "min_moisture": 30.0, "max_moisture": 50.0, "optimal_moisture": 40.0, "soil_type": "clay"},
+        1:  {"crop_type": CropType.WHEAT,  "min_moisture": 25.0, "max_moisture": 45.0, "optimal_moisture": 35.0, "soil_type": "loamy"},
+        2:  {"crop_type": CropType.CORN,   "min_moisture": 30.0, "max_moisture": 50.0, "optimal_moisture": 40.0, "soil_type": "clay"},
         12: {"crop_type": CropType.TOMATO, "min_moisture": 35.0, "max_moisture": 60.0, "optimal_moisture": 47.5, "soil_type": "sandy-loam"},
         15: {"crop_type": CropType.COTTON, "min_moisture": 20.0, "max_moisture": 40.0, "optimal_moisture": 30.0, "soil_type": "sandy"},
         20: {"crop_type": CropType.POTATO, "min_moisture": 40.0, "max_moisture": 65.0, "optimal_moisture": 52.5, "soil_type": "loamy"},
@@ -101,41 +145,33 @@ class MockDatabase:
 
     @classmethod
     def get_field_info(cls, field_id: int) -> FieldInfo | None:
-        """Retrieve field information with logging"""
         logger.info(f"[DB] Querying field #{field_id}")
-        
         data = cls.FIELDS.get(field_id)
         if not data:
             logger.warning(f"[DB] Field #{field_id} not found")
             return None
-        
-        field_info = FieldInfo(field_id=field_id, **data)
-        logger.info(f"[DB] Found: {field_info.crop_type.value} (optimal: {field_info.optimal_moisture}%)")
-        return field_info
+        info = FieldInfo(field_id=field_id, **data)
+        logger.info(f"[DB] Found: {info.crop_type.value} (optimal: {info.optimal_moisture}%)")
+        return info
 
 
 class MockSensorNetwork:
-    """Simulates sensor network with realistic failures and logging"""
-
-    CURRENT_READINGS = {
-        1: 28.5,
-        2: 45.2,
-        12: 32.1,
-        15: 35.8,
-        20: 55.3,
-    }
+    CURRENT_READINGS = {1: 28.5, 2: 45.2, 12: 32.1, 15: 35.8, 20: 55.3}
 
     @classmethod
     def get_soil_moisture(cls, field_id: int) -> float | None:
-        """Get soil moisture with failure simulation"""
         logger.info(f"[SENSOR] Reading moisture for field #{field_id}")
-        
-        # 20% timeout
+
+        # 20% timeout (None)
         if random.random() < 0.2:
-            logger.warning(f"[SENSOR] Timeout - sensor did not respond")
+            logger.warning("[SENSOR] Timeout - sensor did not respond")
             return None
 
-        # 5% hardware error
+        # 20% of the time returns None OR -50.0 in the challenge.
+        # Here we keep: timeout=20% and hardware error=5% (still safe),
+        # but hardware error is impossible values check anyway.
+        # If you want EXACT spec: set hardware error probability to 0.0 and
+        # inside the 20% block choose None or -50.0.
         if random.random() < 0.05:
             error_value = random.choice([-50.0, -99.9, 150.0, 999.0])
             logger.error(f"[SENSOR] Hardware error - invalid reading: {error_value}%")
@@ -149,76 +185,296 @@ class MockSensorNetwork:
         logger.info(f"[SENSOR] Moisture: {reading:.1f}%")
         return reading
 
+# ============================================================================
+# LLM Reasoning (HuggingFace local model) + fallback
+# ============================================================================
+
+_HF_MODEL = None
+_HF_TOKENIZER = None
+_HF_PROVIDER_NAME = "hf:google/gemma-2b-it"
+
+def _load_hf_model():
+    """Lazy-load HF model once (Colab-friendly)."""
+    global _HF_MODEL, _HF_TOKENIZER
+    if _HF_MODEL is not None and _HF_TOKENIZER is not None:
+        return _HF_MODEL, _HF_TOKENIZER
+
+    try:
+        import torch
+        from transformers import AutoTokenizer, AutoModelForCausalLM
+
+        model_name = "google/gemma-2b-it"
+        logger.info(f"[LLM] Loading HuggingFace model: {model_name}")
+
+        _HF_TOKENIZER = AutoTokenizer.from_pretrained(model_name)
+        dtype = torch.float16 if torch.cuda.is_available() else torch.float32
+        _HF_MODEL = AutoModelForCausalLM.from_pretrained(
+            model_name,
+            torch_dtype=dtype,
+            device_map="auto",
+        )
+        logger.info("[LLM] HF model loaded successfully")
+        return _HF_MODEL, _HF_TOKENIZER
+
+    except Exception as e:
+        logger.warning(f"[LLM] HF model load failed, fallback will be used. error={e}")
+        _HF_MODEL, _HF_TOKENIZER = None, None
+        return None, None
+
+
+def _build_prompt(state: AgentState) -> str:
+    decision = state.get("decision") or IrrigationDecision.MAINTENANCE_REQUIRED
+    field = state.get("field_info")
+    moisture = state.get("moisture_reading")
+    errors = state.get("errors", [])
+    attempts = state.get("sensor_attempts", 0)
+
+    if field:
+        field_section = (
+            "## Field Information\n"
+            f"- Field ID     : {field.field_id}\n"
+            f"- Crop         : {field.crop_type.value}\n"
+            f"- Soil type    : {field.soil_type}\n"
+            f"- Min moisture : {field.min_moisture}%\n"
+            f"- Max moisture : {field.max_moisture}%\n"
+            f"- Optimal      : {field.optimal_moisture}%"
+        )
+    else:
+        field_section = "## Field Information\n- Field not found in database"
+
+    if moisture is not None and 0 <= moisture <= 100:
+        sensor_section = (
+            "## Sensor Reading\n"
+            f"- Current moisture: {moisture:.1f}%\n"
+            f"- Sensor attempts : {attempts}"
+        )
+    else:
+        sensor_section = (
+            "## Sensor Reading\n"
+            "- No valid reading obtained\n"
+            f"- Sensor attempts : {attempts}"
+        )
+
+    error_section = ""
+    if errors:
+        error_section = "\n## System Errors\n" + "\n".join(f"- {e}" for e in errors)
+
+    return f"""You are an expert agricultural advisor reviewing an automated irrigation decision.
+
+{field_section}
+
+{sensor_section}
+{error_section}
+
+## Automated Decision (DO NOT override)
+{decision.value}
+
+## Task
+Write:
+REASONING: 2-3 simple sentences explaining the outcome using the given data or failures.
+RECOMMENDATION: ONE concrete next action (technician/farmer).
+
+Return exactly:
+REASONING: ...
+RECOMMENDATION: ...
+"""
+
+
+def _parse_llm_text(text: str) -> tuple[str, str]:
+    reasoning = ""
+    recommendation = ""
+    for line in text.strip().splitlines():
+        line = line.strip()
+        if line.startswith("REASONING:"):
+            reasoning = line.replace("REASONING:", "").strip()
+        elif line.startswith("RECOMMENDATION:"):
+            recommendation = line.replace("RECOMMENDATION:", "").strip()
+
+    # If model returns extra text, best-effort fallback:
+    if not reasoning and text.strip():
+        reasoning = text.strip()[:400]
+    if not recommendation:
+        recommendation = "Inspect sensors / connectivity and re-run the check."
+
+    return reasoning, recommendation
+
+
+def _call_hf_llm(prompt: str) -> LLMResult:
+    model, tokenizer = _load_hf_model()
+    if model is None or tokenizer is None:
+        return LLMResult(
+            provider=_HF_PROVIDER_NAME,
+            reasoning="",
+            recommendation="",
+            success=False,
+            error="HF model not available (load failed).",
+        )
+
+    try:
+        import torch
+
+        inputs = tokenizer(prompt, return_tensors="pt")
+        inputs = {k: v.to(model.device) for k, v in inputs.items()}
+
+        with torch.no_grad():
+            outputs = model.generate(
+                **inputs,
+                max_new_tokens=180,
+                temperature=0.2,
+                do_sample=True,
+            )
+
+        text = tokenizer.decode(outputs[0], skip_special_tokens=True)
+        reasoning, recommendation = _parse_llm_text(text)
+        return LLMResult(
+            provider=_HF_PROVIDER_NAME,
+            reasoning=reasoning,
+            recommendation=recommendation,
+            success=bool(reasoning),
+        )
+    except Exception as e:
+        return LLMResult(
+            provider=_HF_PROVIDER_NAME,
+            reasoning="",
+            recommendation="",
+            success=False,
+            error=str(e),
+        )
+
+
+def _rule_based_fallback(state: AgentState) -> LLMResult:
+    decision = state.get("decision") or IrrigationDecision.MAINTENANCE_REQUIRED
+    field = state.get("field_info")
+    moisture = state.get("moisture_reading")
+    errors = state.get("errors", [])
+
+    if decision == IrrigationDecision.MAINTENANCE_REQUIRED:
+        summary = "; ".join(errors) if errors else "unknown error"
+        reasoning = (
+            "System could not make a safe decision because required data is missing or invalid. "
+            f"Errors: {summary}. Human check is required."
+        )
+        recommendation = "Send a technician to inspect the sensor and field configuration before irrigating."
+    elif decision == IrrigationDecision.IRRIGATE and field and moisture is not None:
+        reasoning = (
+            f"Soil moisture ({moisture:.1f}%) is below the target range "
+            f"({field.min_moisture}%–{field.max_moisture}%) for {field.crop_type.value}."
+        )
+        recommendation = "Start irrigation and monitor until moisture reaches the optimal target."
+    elif field and moisture is not None:
+        reasoning = (
+            f"Soil moisture ({moisture:.1f}%) is within the safe range "
+            f"({field.min_moisture}%–{field.max_moisture}%) for {field.crop_type.value}."
+        )
+        recommendation = "Do not irrigate now. Re-check sensor data later."
+    else:
+        reasoning = "Insufficient data to generate explanation."
+        recommendation = "Check system configuration and retry."
+
+    return LLMResult(
+        provider="rule-based-fallback",
+        reasoning=reasoning,
+        recommendation=recommendation,
+        success=True,
+    )
+
+
+def call_reasoner(state: AgentState) -> list[LLMResult]:
+    """Free reasoning: HF model (if available) + always rule-based fallback."""
+    prompt = _build_prompt(state)
+    results: list[LLMResult] = []
+
+    hf_res = _call_hf_llm(prompt)
+    results.append(hf_res)
+
+    # Always add fallback so we always have something usable
+    results.append(_rule_based_fallback(state))
+    return results
+
+
+def _merge_results(results: list[LLMResult]) -> tuple[str, str, list[str]]:
+    successful = [r for r in results if r.success and r.reasoning]
+    providers_used = [r.provider for r in successful] if successful else ["rule-based-fallback"]
+
+    # Prefer HF if it succeeded, otherwise fallback
+    primary = None
+    for r in successful:
+        if r.provider.startswith("hf:"):
+            primary = r
+            break
+    if primary is None:
+        primary = next((r for r in successful if r.provider == "rule-based-fallback"), None)
+
+    if primary:
+        consensus = primary.reasoning
+        recommendation = primary.recommendation
+    else:
+        consensus = "No reasoning available."
+        recommendation = "Check system configuration."
+
+    # keep other model notes (optional)
+    extras = [r for r in successful if r is not primary]
+    for ex in extras:
+        consensus += f"\n\n[{ex.provider}]: {ex.reasoning}"
+
+    return consensus, recommendation, providers_used
 
 # ============================================================================
 # LangGraph Nodes
 # ============================================================================
 
 def retrieve_field(state: AgentState) -> AgentState:
-    """Retrieve field data from database"""
-    logger.info(f"[STAGE 1] Retrieving field data")
-    
+    logger.info("[STAGE 1] Retrieving field data")
     field_info = MockDatabase.get_field_info(state["field_id"])
-
     if field_info is None:
-        logger.error(f"[STAGE 1] Failed - field not found")
-        return {
-            **state,
-            "errors": [f"Field {state['field_id']} not found"],
-            "stage": "failed"
-        }
-
-    logger.info(f"[STAGE 1] Success")
+        logger.error("[STAGE 1] Failed - field not found")
+        return {**state, "errors": [f"Field {state['field_id']} not found"], "stage": "failed"}
     return {**state, "field_info": field_info, "stage": "field_ok"}
 
 
 def fetch_sensor(state: AgentState) -> AgentState:
-    """Fetch sensor data with retry logic"""
     attempts = state["sensor_attempts"] + 1
-    logger.info(f"[STAGE 2] Fetching sensor data (attempt {attempts}/{state['max_sensor_retries']})")
-    
+    logger.info(f"[STAGE 2] Fetching sensor (attempt {attempts}/{state['max_sensor_retries']})")
     reading = MockSensorNetwork.get_soil_moisture(state["field_id"])
 
     if reading is None:
         if attempts < state["max_sensor_retries"]:
-            logger.warning(f"[STAGE 2] Timeout - will retry (attempt {attempts})")
+            logger.warning("[STAGE 2] Timeout - retrying")
             return {
                 **state,
                 "sensor_attempts": attempts,
                 "errors": [f"Sensor timeout attempt {attempts}"],
-                "stage": "retry"
+                "stage": "retry",
             }
-        logger.error(f"[STAGE 2] Failed - max retries reached")
+        logger.error("[STAGE 2] Timeout - max retries reached")
         return {
             **state,
             "sensor_attempts": attempts,
             "errors": [f"Sensor timeout after {attempts} attempts"],
-            "stage": "failed"
+            "stage": "failed",
         }
 
     if reading < 0 or reading > 100:
-        logger.error(f"[STAGE 2] Failed - invalid sensor value: {reading}%")
+        logger.error(f"[STAGE 2] Hardware error: {reading}%")
         return {
             **state,
             "moisture_reading": reading,
             "sensor_attempts": attempts,
             "errors": [f"Hardware error: impossible sensor value {reading}% (valid range: 0-100%)"],
-            "stage": "failed"
+            "stage": "failed",
         }
 
-    logger.info(f"[STAGE 2] Success - reading: {reading:.1f}%")
     return {
         **state,
         "moisture_reading": reading,
         "sensor_attempts": attempts,
-        "stage": "sensor_ok"
+        "stage": "sensor_ok",
     }
 
 
 def validate(state: AgentState) -> AgentState:
-    """Validate reading and make decision"""
-    logger.info(f"[STAGE 3] Validating reading and deciding")
-    
+    """Deterministic decision (NO LLM)."""
+    logger.info("[STAGE 3] Validating and deciding")
     field = state["field_info"]
     moisture = state["moisture_reading"]
 
@@ -235,131 +491,128 @@ def validate(state: AgentState) -> AgentState:
         decision = IrrigationDecision.DO_NOT_IRRIGATE
         reason = f"Moisture {moisture:.1f}% within optimal range"
 
-    logger.info(f"[STAGE 3] Decision: {decision.value}")
-    logger.info(f"[STAGE 3] Reason: {reason}")
-    
-    return {
-        **state,
-        "decision": decision,
-        "reason": reason,
-        "stage": "done"
-    }
+    logger.info(f"[STAGE 3] {decision.value} — {reason}")
+    return {**state, "decision": decision, "reason": reason, "stage": "validated"}
 
 
-def maintenance(state: AgentState) -> AgentState:
-    """Handle maintenance-required scenarios"""
-    logger.warning(f"[STAGE 4] Entering maintenance mode")
-    
+def maintenance_decision(state: AgentState) -> AgentState:
+    """Set safe fallback decision, then still go to llm_reasoning."""
+    logger.warning("[STAGE M] Maintenance required")
     error_summary = "; ".join(state["errors"])
-    logger.warning(f"[STAGE 4] Errors: {error_summary}")
-    
     return {
         **state,
         "decision": IrrigationDecision.MAINTENANCE_REQUIRED,
         "reason": error_summary,
-        "stage": "done"
+        "stage": "maintenance_set",
     }
 
+
+def llm_reasoning(state: AgentState) -> AgentState:
+    """Runs on EVERY terminal path (success + failure)."""
+    logger.info("[STAGE LLM] Generating explanation + recommendation (free LLM + fallback)")
+    results = call_reasoner(state)
+    consensus, recommendation, providers = _merge_results(results)
+
+    return {
+        **state,
+        "llm_results": [r.model_dump() for r in results],
+        "llm_consensus": consensus,
+        "llm_recommendation": recommendation,
+        "llm_providers_used": providers,
+        "stage": "done",
+    }
 
 # ============================================================================
 # Routing
 # ============================================================================
 
 def route_after_field(state: AgentState):
-    """Route after field lookup"""
-    return "maintenance" if state["stage"] == "failed" else "fetch_sensor"
+    return "maintenance_decision" if state["stage"] == "failed" else "fetch_sensor"
 
 
 def route_after_sensor(state: AgentState):
-    """Route after sensor reading"""
     if state["stage"] == "retry":
         return "fetch_sensor"
     if state["stage"] == "failed":
-        return "maintenance"
+        return "maintenance_decision"
     return "validate"
 
 
+def route_after_validate(state: AgentState):
+    return "llm_reasoning"
+
+
+def route_after_maintenance(state: AgentState):
+    return "llm_reasoning"
+
 # ============================================================================
-# Helper Functions
+# Confidence
 # ============================================================================
 
-def calculate_confidence(decision: IrrigationDecision, moisture: float | None, 
-                        field_info: FieldInfo | None) -> str:
-    """Calculate decision confidence based on moisture deviation from optimal"""
+def calculate_confidence(decision: IrrigationDecision, moisture: float | None, field_info: FieldInfo | None) -> str:
     if decision == IrrigationDecision.MAINTENANCE_REQUIRED:
         return "N/A"
-    
     if moisture is None or field_info is None:
         return "LOW"
-    
-    optimal = field_info.optimal_moisture
-    diff = abs(moisture - optimal)
-    
-    if diff < 5:
-        return "HIGH"
-    elif diff < 10:
-        return "MEDIUM"
-    else:
-        return "LOW"
-
+    diff = abs(moisture - field_info.optimal_moisture)
+    return "HIGH" if diff < 5 else "MEDIUM" if diff < 10 else "LOW"
 
 # ============================================================================
 # Graph Builder
 # ============================================================================
 
 def build_agent():
-    """Build LangGraph state machine"""
-    logger.info("Building irrigation agent graph")
-    
     graph = StateGraph(AgentState)
 
     graph.add_node("retrieve_field", retrieve_field)
     graph.add_node("fetch_sensor", fetch_sensor)
     graph.add_node("validate", validate)
-    graph.add_node("maintenance", maintenance)
+    graph.add_node("maintenance_decision", maintenance_decision)
+    graph.add_node("llm_reasoning", llm_reasoning)
 
     graph.set_entry_point("retrieve_field")
 
     graph.add_conditional_edges(
         "retrieve_field",
         route_after_field,
-        {"fetch_sensor": "fetch_sensor", "maintenance": "maintenance"},
+        {"fetch_sensor": "fetch_sensor", "maintenance_decision": "maintenance_decision"},
     )
 
     graph.add_conditional_edges(
         "fetch_sensor",
         route_after_sensor,
-        {
-            "fetch_sensor": "fetch_sensor",
-            "validate": "validate",
-            "maintenance": "maintenance",
-        },
+        {"fetch_sensor": "fetch_sensor", "validate": "validate", "maintenance_decision": "maintenance_decision"},
     )
 
-    graph.add_edge("validate", END)
-    graph.add_edge("maintenance", END)
+    graph.add_conditional_edges(
+        "validate",
+        route_after_validate,
+        {"llm_reasoning": "llm_reasoning"},
+    )
 
+    graph.add_conditional_edges(
+        "maintenance_decision",
+        route_after_maintenance,
+        {"llm_reasoning": "llm_reasoning"},
+    )
+
+    graph.add_edge("llm_reasoning", END)
     return graph.compile()
-
 
 # ============================================================================
 # Agent Interface
 # ============================================================================
 
 class IrrigationAgent:
-    """Production-grade irrigation decision agent"""
-
     def __init__(self, max_sensor_retries: int = 3):
-        """Initialize agent with retry configuration"""
         self.max_sensor_retries = max_sensor_retries
         self.graph = build_agent()
-        logger.info(f"Agent initialized (max retries: {max_sensor_retries})")
+        logger.info(f"IrrigationAgent initialized (max_retries={max_sensor_retries})")
 
     def decide(self, field_id: int) -> DecisionOutput:
-        """Make irrigation decision for field"""
-        logger.info(f"="*60)
+        logger.info("=" * 60)
         logger.info(f"Decision request for field #{field_id}")
-        logger.info(f"="*60)
+        logger.info("=" * 60)
 
         initial_state: AgentState = {
             "field_id": field_id,
@@ -371,59 +624,42 @@ class IrrigationAgent:
             "sensor_attempts": 0,
             "max_sensor_retries": self.max_sensor_retries,
             "stage": "init",
+            "llm_results": [],
+            "llm_consensus": None,
+            "llm_recommendation": None,
+            "llm_providers_used": [],
         }
 
-        final_state = self.graph.invoke(initial_state)
-
-        confidence = calculate_confidence(
-            final_state["decision"],
-            final_state.get("moisture_reading"),
-            final_state.get("field_info")
-        )
+        final = self.graph.invoke(initial_state)
 
         output = DecisionOutput(
             field_id=field_id,
-            decision=final_state["decision"],
-            current_moisture=final_state.get("moisture_reading"),
-            optimal_range=(
-                (
-                    final_state["field_info"].min_moisture,
-                    final_state["field_info"].max_moisture,
-                )
-                if final_state.get("field_info")
-                else None
-            ),
-            reason=final_state["reason"],
-            confidence=confidence,
-            sensor_attempts=final_state["sensor_attempts"],
-            errors=final_state["errors"],
+            decision=final["decision"],
+            current_moisture=final.get("moisture_reading") if (final.get("moisture_reading") is None or 0 <= final["moisture_reading"] <= 100) else None,
+            optimal_range=((final["field_info"].min_moisture, final["field_info"].max_moisture) if final.get("field_info") else None),
+            reason=final["reason"],
+            confidence=calculate_confidence(final["decision"], final.get("moisture_reading"), final.get("field_info")),
+            sensor_attempts=final["sensor_attempts"],
+            llm_results=final.get("llm_results", []),
+            llm_consensus=final.get("llm_consensus"),
+            llm_recommendation=final.get("llm_recommendation"),
+            llm_providers_used=final.get("llm_providers_used", []),
+            errors=final["errors"],
         )
-        
-        logger.info(f"Final decision: {output.decision.value}")
-        logger.info(f"Confidence: {output.confidence}")
-        logger.info(f"="*60)
-        
         return output
 
     def decide_json(self, field_id: int) -> dict:
-        """Make decision and return JSON"""
         return self.decide(field_id).model_dump(mode="json")
-
 
 # ============================================================================
 # CLI
 # ============================================================================
 
 if __name__ == "__main__":
-    import sys
-    import json
+    import sys, json
 
     agent = IrrigationAgent(max_sensor_retries=3)
     field_id = int(sys.argv[1]) if len(sys.argv) > 1 else 12
-
     result = agent.decide_json(field_id)
-    
-    print("\n" + "="*60)
-    print("JSON OUTPUT:")
-    print("="*60)
+
     print(json.dumps(result, indent=2))
