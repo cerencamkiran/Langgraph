@@ -1,16 +1,17 @@
 """
 Integration-style test suite for irrigation decision agent.
+
 Covers:
 - Success case
-- Field not found
-- Sensor timeout + retry
-- Hardware corruption
+- Field not found          → MAINTENANCE_REQUIRED + LLM still runs
+- Sensor timeout + retry   → MAINTENANCE_REQUIRED + LLM still runs
+- Hardware error           → MAINTENANCE_REQUIRED + LLM still runs
 - Multi-field validation
+- LLM fields present on success
+- LLM fields present on failure
 """
 
-import random
 from irrigation_agent import IrrigationAgent, IrrigationDecision, MockSensorNetwork
-import json
 
 
 class TestRunner:
@@ -26,126 +27,130 @@ class TestRunner:
             self.test_sensor_timeout,
             self.test_hardware_error,
             self.test_multiple_fields,
+            self.test_llm_on_success,
+            self.test_llm_on_sensor_failure,
+            self.test_llm_on_field_not_found,
         ]
         for test in tests:
             try:
                 test()
             except AssertionError as e:
-                test_name = test.__name__.replace("test_", "").replace("_", " ").title()
-                self.failures.append((test_name, str(e)))
+                name = test.__name__.replace("test_", "").replace("_", " ").title()
+                self.failures.append((name, str(e)))
         self.summary()
 
     # ------------------------------------------------------------------
-    # Test: Normal Operation
-    # ------------------------------------------------------------------
     def test_normal_operation(self):
         original = MockSensorNetwork.get_soil_moisture
-
-        def mock_clean(field_id):
-            # Return a deterministic, valid moisture value
-            readings = {1: 28.5, 2: 45.2, 12: 32.1, 15: 35.8, 20: 55.3}
-            return readings.get(field_id, 40.0)
-
-        MockSensorNetwork.get_soil_moisture = staticmethod(mock_clean)
+        MockSensorNetwork.get_soil_moisture = staticmethod(
+            lambda fid: {1: 28.5, 2: 45.2, 12: 32.1, 15: 35.8, 20: 55.3}.get(fid, 40.0)
+        )
         try:
             result = self.agent.decide_json(12)
-            assert result["decision"] in [d.value for d in IrrigationDecision], \
-                f"Unexpected decision: {result['decision']}"
-            assert result["current_moisture"] is not None, \
-                "current_moisture should not be None"
-            assert result["optimal_range"] is not None, \
-                "optimal_range should not be None"
+            assert result["decision"] in [d.value for d in IrrigationDecision]
+            assert result["current_moisture"] is not None
+            assert result["optimal_range"] is not None
             self.results.append("Normal Operation")
         finally:
             MockSensorNetwork.get_soil_moisture = original
 
     # ------------------------------------------------------------------
-    # Test: Field Not Found
-    # ------------------------------------------------------------------
     def test_field_not_found(self):
         result = self.agent.decide_json(999)
-        assert result["decision"] == IrrigationDecision.MAINTENANCE_REQUIRED.value, \
-            f"Expected MAINTENANCE_REQUIRED, got {result['decision']}"
-        assert len(result["errors"]) > 0, \
-            "errors list should not be empty for unknown field"
+        assert result["decision"] == IrrigationDecision.MAINTENANCE_REQUIRED.value
+        assert len(result["errors"]) > 0
         self.results.append("Field Not Found")
 
     # ------------------------------------------------------------------
-    # Test: Sensor Timeout + Retry
-    # ------------------------------------------------------------------
     def test_sensor_timeout(self):
         original = MockSensorNetwork.get_soil_moisture
-
-        def mock_timeout(field_id):
-            return None
-
-        MockSensorNetwork.get_soil_moisture = staticmethod(mock_timeout)
+        MockSensorNetwork.get_soil_moisture = staticmethod(lambda fid: None)
         try:
             result = self.agent.decide_json(12)
-            assert result["decision"] == IrrigationDecision.MAINTENANCE_REQUIRED.value, \
-                f"Expected MAINTENANCE_REQUIRED, got {result['decision']}"
-            assert result["sensor_attempts"] >= 3, \
-                f"Expected >= 3 attempts, got {result['sensor_attempts']}"
+            assert result["decision"] == IrrigationDecision.MAINTENANCE_REQUIRED.value
+            assert result["sensor_attempts"] >= 3
             self.results.append("Sensor Timeout + Retry")
         finally:
             MockSensorNetwork.get_soil_moisture = original
 
     # ------------------------------------------------------------------
-    # Test: Hardware Error (impossible sensor value)
-    # ------------------------------------------------------------------
     def test_hardware_error(self):
         original = MockSensorNetwork.get_soil_moisture
-
-        def mock_error(field_id):
-            return -50.0
-
-        MockSensorNetwork.get_soil_moisture = staticmethod(mock_error)
+        MockSensorNetwork.get_soil_moisture = staticmethod(lambda fid: -50.0)
         try:
             result = self.agent.decide_json(12)
-            assert result["decision"] == IrrigationDecision.MAINTENANCE_REQUIRED.value, \
-                f"Expected MAINTENANCE_REQUIRED, got {result['decision']}"
-            assert len(result["errors"]) > 0, \
-                "errors list should not be empty for hardware error"
-            assert any(
-                "error" in e.lower() or "impossible" in e.lower()
-                for e in result["errors"]
-            ), f"No descriptive error message found. errors={result['errors']}"
+            assert result["decision"] == IrrigationDecision.MAINTENANCE_REQUIRED.value
+            assert any("error" in e.lower() or "impossible" in e.lower() for e in result["errors"]), \
+                f"No descriptive error. errors={result['errors']}"
             self.results.append("Hardware Error")
         finally:
             MockSensorNetwork.get_soil_moisture = original
 
     # ------------------------------------------------------------------
-    # Test: Multiple Fields
-    # ------------------------------------------------------------------
     def test_multiple_fields(self):
         original = MockSensorNetwork.get_soil_moisture
-
-        def mock_clean(field_id):
-            readings = {1: 28.5, 2: 45.2, 12: 32.1, 15: 35.8, 20: 55.3}
-            return readings.get(field_id, 40.0)
-
-        MockSensorNetwork.get_soil_moisture = staticmethod(mock_clean)
+        MockSensorNetwork.get_soil_moisture = staticmethod(
+            lambda fid: {1: 28.5, 2: 45.2, 12: 32.1, 15: 35.8, 20: 55.3}.get(fid, 40.0)
+        )
         try:
-            fields = [1, 2, 12, 15, 20]
-            for field_id in fields:
-                result = self.agent.decide_json(field_id)
-                assert result["decision"] in [d.value for d in IrrigationDecision], \
-                    f"Field {field_id}: unexpected decision {result['decision']}"
+            for fid in [1, 2, 12, 15, 20]:
+                result = self.agent.decide_json(fid)
+                assert result["decision"] in [d.value for d in IrrigationDecision]
             self.results.append("Multiple Fields")
         finally:
             MockSensorNetwork.get_soil_moisture = original
 
     # ------------------------------------------------------------------
-    # Summary
+    def test_llm_on_success(self):
+        original = MockSensorNetwork.get_soil_moisture
+        MockSensorNetwork.get_soil_moisture = staticmethod(lambda fid: 32.1)
+        try:
+            result = self.agent.decide_json(12)
+            assert result["decision"] in [d.value for d in IrrigationDecision]
+            self._assert_llm_fields(result, context="success path")
+            self.results.append("LLM on Success")
+        finally:
+            MockSensorNetwork.get_soil_moisture = original
+
+    # ------------------------------------------------------------------
+    def test_llm_on_sensor_failure(self):
+        original = MockSensorNetwork.get_soil_moisture
+        MockSensorNetwork.get_soil_moisture = staticmethod(lambda fid: None)
+        try:
+            result = self.agent.decide_json(12)
+            assert result["decision"] == IrrigationDecision.MAINTENANCE_REQUIRED.value
+            self._assert_llm_fields(result, context="sensor failure path")
+            self.results.append("LLM on Sensor Failure")
+        finally:
+            MockSensorNetwork.get_soil_moisture = original
+
+    # ------------------------------------------------------------------
+    def test_llm_on_field_not_found(self):
+        result = self.agent.decide_json(999)
+        assert result["decision"] == IrrigationDecision.MAINTENANCE_REQUIRED.value
+        self._assert_llm_fields(result, context="field not found path")
+        self.results.append("LLM on Field Not Found")
+
+    # ------------------------------------------------------------------
+    def _assert_llm_fields(self, result: dict, context: str = ""):
+        prefix = f"[{context}] " if context else ""
+        assert result.get("llm_consensus"), f"{prefix}llm_consensus should be non-empty"
+        assert result.get("llm_recommendation"), f"{prefix}llm_recommendation should be non-empty"
+        assert isinstance(result.get("llm_providers_used"), list) and result["llm_providers_used"], \
+            f"{prefix}llm_providers_used should be a non-empty list"
+        assert isinstance(result.get("llm_results"), list) and result["llm_results"], \
+            f"{prefix}llm_results should be a non-empty list"
+
     # ------------------------------------------------------------------
     def summary(self):
         print("\nTest Summary")
-        print("----------------")
+        print("=" * 55)
         for test in self.results:
             print(f"  ✓ {test}: PASS")
         for name, err in self.failures:
             print(f"  ✗ {name}: FAIL — {err}")
-        print(f"\nPassed: {len(self.results)} / {len(self.results) + len(self.failures)}")
+        print("-" * 55)
+        print(f"Passed: {len(self.results)} / {len(self.results) + len(self.failures)}")
         if self.failures:
             raise SystemExit(1)
         print("All tests passed.")
