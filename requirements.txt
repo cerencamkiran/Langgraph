@@ -1,4 +1,9 @@
 langgraph==0.2.60
 langchain-core==0.3.36
+langchain==0.3.19
 pydantic==2.10.6
 typing-extensions==4.12.2
+transformers>=4.45.0
+accelerate>=0.33.0
+torch
+sentencepiece
