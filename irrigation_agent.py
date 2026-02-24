@@ -21,11 +21,9 @@ Graph flow:
                  │
                 END
 
-Key design:
-- EVERY terminal path goes through llm_reasoning (success OR failure).
-- Deterministic decision is ALWAYS tool-driven (no LLM in decision).
-- LLM only generates explanation + recommendation.
-- If HF model can't load (no GPU / memory), rule-based fallback still provides reasoning.
+- Deterministic decision: tools + thresholds (NO LLM in decision).
+- LLM runs on ALL terminal paths (success or failure) to explain & recommend.
+- Uses a NON-GATED HuggingFace model by default (no HF token needed).
 """
 
 import random
@@ -39,8 +37,7 @@ from pydantic import BaseModel, Field
 from langgraph.graph import StateGraph, END
 
 # ---------------------------------------------------------------------
-# Fix for some environments where langchain debug attr may be missing.
-# This prevents callback manager init from crashing.
+# Prevent langchain debug import warning from breaking anything
 # ---------------------------------------------------------------------
 try:
     import langchain  # type: ignore
@@ -99,7 +96,6 @@ class DecisionOutput(BaseModel):
     confidence: str
     sensor_attempts: int
 
-    # Free-LLM reasoning fields
     llm_results: list[dict] = Field(default_factory=list)
     llm_consensus: str | None = None
     llm_recommendation: str | None = None
@@ -124,7 +120,6 @@ class AgentState(TypedDict):
     max_sensor_retries: int
     stage: str
 
-    # LLM fields
     llm_results: list[dict]
     llm_consensus: str | None
     llm_recommendation: str | None
@@ -162,16 +157,12 @@ class MockSensorNetwork:
     def get_soil_moisture(cls, field_id: int) -> float | None:
         logger.info(f"[SENSOR] Reading moisture for field #{field_id}")
 
-        # 20% timeout (None)
+        # 20% timeout
         if random.random() < 0.2:
             logger.warning("[SENSOR] Timeout - sensor did not respond")
             return None
 
-        # 20% of the time returns None OR -50.0 in the challenge.
-        # Here we keep: timeout=20% and hardware error=5% (still safe),
-        # but hardware error is impossible values check anyway.
-        # If you want EXACT spec: set hardware error probability to 0.0 and
-        # inside the 20% block choose None or -50.0.
+        # 5% hardware error
         if random.random() < 0.05:
             error_value = random.choice([-50.0, -99.9, 150.0, 999.0])
             logger.error(f"[SENSOR] Hardware error - invalid reading: {error_value}%")
@@ -186,30 +177,41 @@ class MockSensorNetwork:
         return reading
 
 # ============================================================================
-# LLM Reasoning (HuggingFace local model) + fallback
+# Free LLM Reasoning (NON-GATED HF model) + fallback
 # ============================================================================
 
+# Non-gated, good instruction-following for Colab.
+HF_MODEL_NAME = "Qwen/Qwen2.5-1.5B-Instruct"
 _HF_MODEL = None
 _HF_TOKENIZER = None
-_HF_PROVIDER_NAME = "hf:google/gemma-2b-it"
+_HF_TRIED_LOAD = False
+_HF_PROVIDER_NAME = f"hf:{HF_MODEL_NAME}"
+
 
 def _load_hf_model():
-    """Lazy-load HF model once (Colab-friendly)."""
-    global _HF_MODEL, _HF_TOKENIZER
+    """
+    Lazy-load the HF model once.
+    If it fails once, we don't keep retrying.
+    """
+    global _HF_MODEL, _HF_TOKENIZER, _HF_TRIED_LOAD
+
     if _HF_MODEL is not None and _HF_TOKENIZER is not None:
         return _HF_MODEL, _HF_TOKENIZER
+
+    if _HF_TRIED_LOAD:
+        return None, None
+
+    _HF_TRIED_LOAD = True
 
     try:
         import torch
         from transformers import AutoTokenizer, AutoModelForCausalLM
 
-        model_name = "google/gemma-2b-it"
-        logger.info(f"[LLM] Loading HuggingFace model: {model_name}")
-
-        _HF_TOKENIZER = AutoTokenizer.from_pretrained(model_name)
+        logger.info(f"[LLM] Loading HuggingFace model: {HF_MODEL_NAME}")
+        _HF_TOKENIZER = AutoTokenizer.from_pretrained(HF_MODEL_NAME)
         dtype = torch.float16 if torch.cuda.is_available() else torch.float32
         _HF_MODEL = AutoModelForCausalLM.from_pretrained(
-            model_name,
+            HF_MODEL_NAME,
             torch_dtype=dtype,
             device_map="auto",
         )
@@ -270,13 +272,12 @@ def _build_prompt(state: AgentState) -> str:
 {decision.value}
 
 ## Task
-Write:
+Return exactly:
 REASONING: 2-3 simple sentences explaining the outcome using the given data or failures.
 RECOMMENDATION: ONE concrete next action (technician/farmer).
 
-Return exactly:
-REASONING: ...
-RECOMMENDATION: ...
+REASONING:
+RECOMMENDATION:
 """
 
 
@@ -290,12 +291,10 @@ def _parse_llm_text(text: str) -> tuple[str, str]:
         elif line.startswith("RECOMMENDATION:"):
             recommendation = line.replace("RECOMMENDATION:", "").strip()
 
-    # If model returns extra text, best-effort fallback:
-    if not reasoning and text.strip():
-        reasoning = text.strip()[:400]
+    if not reasoning:
+        reasoning = (text.strip()[:400] if text.strip() else "")
     if not recommendation:
         recommendation = "Inspect sensors / connectivity and re-run the check."
-
     return reasoning, recommendation
 
 
@@ -326,12 +325,14 @@ def _call_hf_llm(prompt: str) -> LLMResult:
 
         text = tokenizer.decode(outputs[0], skip_special_tokens=True)
         reasoning, recommendation = _parse_llm_text(text)
+
         return LLMResult(
             provider=_HF_PROVIDER_NAME,
             reasoning=reasoning,
             recommendation=recommendation,
             success=bool(reasoning),
         )
+
     except Exception as e:
         return LLMResult(
             provider=_HF_PROVIDER_NAME,
@@ -380,14 +381,9 @@ def _rule_based_fallback(state: AgentState) -> LLMResult:
 
 
 def call_reasoner(state: AgentState) -> list[LLMResult]:
-    """Free reasoning: HF model (if available) + always rule-based fallback."""
     prompt = _build_prompt(state)
-    results: list[LLMResult] = []
-
-    hf_res = _call_hf_llm(prompt)
-    results.append(hf_res)
-
-    # Always add fallback so we always have something usable
+    results = []
+    results.append(_call_hf_llm(prompt))
     results.append(_rule_based_fallback(state))
     return results
 
@@ -396,12 +392,7 @@ def _merge_results(results: list[LLMResult]) -> tuple[str, str, list[str]]:
     successful = [r for r in results if r.success and r.reasoning]
     providers_used = [r.provider for r in successful] if successful else ["rule-based-fallback"]
 
-    # Prefer HF if it succeeded, otherwise fallback
-    primary = None
-    for r in successful:
-        if r.provider.startswith("hf:"):
-            primary = r
-            break
+    primary = next((r for r in successful if r.provider.startswith("hf:")), None)
     if primary is None:
         primary = next((r for r in successful if r.provider == "rule-based-fallback"), None)
 
@@ -412,7 +403,6 @@ def _merge_results(results: list[LLMResult]) -> tuple[str, str, list[str]]:
         consensus = "No reasoning available."
         recommendation = "Check system configuration."
 
-    # keep other model notes (optional)
     extras = [r for r in successful if r is not primary]
     for ex in extras:
         consensus += f"\n\n[{ex.provider}]: {ex.reasoning}"
@@ -440,19 +430,9 @@ def fetch_sensor(state: AgentState) -> AgentState:
     if reading is None:
         if attempts < state["max_sensor_retries"]:
             logger.warning("[STAGE 2] Timeout - retrying")
-            return {
-                **state,
-                "sensor_attempts": attempts,
-                "errors": [f"Sensor timeout attempt {attempts}"],
-                "stage": "retry",
-            }
+            return {**state, "sensor_attempts": attempts, "errors": [f"Sensor timeout attempt {attempts}"], "stage": "retry"}
         logger.error("[STAGE 2] Timeout - max retries reached")
-        return {
-            **state,
-            "sensor_attempts": attempts,
-            "errors": [f"Sensor timeout after {attempts} attempts"],
-            "stage": "failed",
-        }
+        return {**state, "sensor_attempts": attempts, "errors": [f"Sensor timeout after {attempts} attempts"], "stage": "failed"}
 
     if reading < 0 or reading > 100:
         logger.error(f"[STAGE 2] Hardware error: {reading}%")
@@ -464,16 +444,10 @@ def fetch_sensor(state: AgentState) -> AgentState:
             "stage": "failed",
         }
 
-    return {
-        **state,
-        "moisture_reading": reading,
-        "sensor_attempts": attempts,
-        "stage": "sensor_ok",
-    }
+    return {**state, "moisture_reading": reading, "sensor_attempts": attempts, "stage": "sensor_ok"}
 
 
 def validate(state: AgentState) -> AgentState:
-    """Deterministic decision (NO LLM)."""
     logger.info("[STAGE 3] Validating and deciding")
     field = state["field_info"]
     moisture = state["moisture_reading"]
@@ -496,20 +470,13 @@ def validate(state: AgentState) -> AgentState:
 
 
 def maintenance_decision(state: AgentState) -> AgentState:
-    """Set safe fallback decision, then still go to llm_reasoning."""
     logger.warning("[STAGE M] Maintenance required")
     error_summary = "; ".join(state["errors"])
-    return {
-        **state,
-        "decision": IrrigationDecision.MAINTENANCE_REQUIRED,
-        "reason": error_summary,
-        "stage": "maintenance_set",
-    }
+    return {**state, "decision": IrrigationDecision.MAINTENANCE_REQUIRED, "reason": error_summary, "stage": "maintenance_set"}
 
 
 def llm_reasoning(state: AgentState) -> AgentState:
-    """Runs on EVERY terminal path (success + failure)."""
-    logger.info("[STAGE LLM] Generating explanation + recommendation (free LLM + fallback)")
+    logger.info("[STAGE LLM] Generating explanation + recommendation (HF + fallback)")
     results = call_reasoner(state)
     consensus, recommendation, providers = _merge_results(results)
 
@@ -572,31 +539,16 @@ def build_agent():
 
     graph.set_entry_point("retrieve_field")
 
-    graph.add_conditional_edges(
-        "retrieve_field",
-        route_after_field,
-        {"fetch_sensor": "fetch_sensor", "maintenance_decision": "maintenance_decision"},
-    )
+    graph.add_conditional_edges("retrieve_field", route_after_field,
+        {"fetch_sensor": "fetch_sensor", "maintenance_decision": "maintenance_decision"})
 
-    graph.add_conditional_edges(
-        "fetch_sensor",
-        route_after_sensor,
-        {"fetch_sensor": "fetch_sensor", "validate": "validate", "maintenance_decision": "maintenance_decision"},
-    )
+    graph.add_conditional_edges("fetch_sensor", route_after_sensor,
+        {"fetch_sensor": "fetch_sensor", "validate": "validate", "maintenance_decision": "maintenance_decision"})
 
-    graph.add_conditional_edges(
-        "validate",
-        route_after_validate,
-        {"llm_reasoning": "llm_reasoning"},
-    )
-
-    graph.add_conditional_edges(
-        "maintenance_decision",
-        route_after_maintenance,
-        {"llm_reasoning": "llm_reasoning"},
-    )
-
+    graph.add_conditional_edges("validate", route_after_validate, {"llm_reasoning": "llm_reasoning"})
+    graph.add_conditional_edges("maintenance_decision", route_after_maintenance, {"llm_reasoning": "llm_reasoning"})
     graph.add_edge("llm_reasoning", END)
+
     return graph.compile()
 
 # ============================================================================
@@ -610,10 +562,6 @@ class IrrigationAgent:
         logger.info(f"IrrigationAgent initialized (max_retries={max_sensor_retries})")
 
     def decide(self, field_id: int) -> DecisionOutput:
-        logger.info("=" * 60)
-        logger.info(f"Decision request for field #{field_id}")
-        logger.info("=" * 60)
-
         initial_state: AgentState = {
             "field_id": field_id,
             "field_info": None,
@@ -635,7 +583,7 @@ class IrrigationAgent:
         output = DecisionOutput(
             field_id=field_id,
             decision=final["decision"],
-            current_moisture=final.get("moisture_reading") if (final.get("moisture_reading") is None or 0 <= final["moisture_reading"] <= 100) else None,
+            current_moisture=(final.get("moisture_reading") if (final.get("moisture_reading") is None or 0 <= final["moisture_reading"] <= 100) else None),
             optimal_range=((final["field_info"].min_moisture, final["field_info"].max_moisture) if final.get("field_info") else None),
             reason=final["reason"],
             confidence=calculate_confidence(final["decision"], final.get("moisture_reading"), final.get("field_info")),
@@ -651,15 +599,9 @@ class IrrigationAgent:
     def decide_json(self, field_id: int) -> dict:
         return self.decide(field_id).model_dump(mode="json")
 
-# ============================================================================
-# CLI
-# ============================================================================
 
 if __name__ == "__main__":
     import sys, json
-
     agent = IrrigationAgent(max_sensor_retries=3)
     field_id = int(sys.argv[1]) if len(sys.argv) > 1 else 12
-    result = agent.decide_json(field_id)
-
-    print(json.dumps(result, indent=2))
+    print(json.dumps(agent.decide_json(field_id), indent=2))
