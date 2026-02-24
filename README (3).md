@@ -5,7 +5,7 @@ A stateful irrigation decision agent built with LangGraph, featuring determinist
 
 ---
 
-## 🎯 Mission
+## Mission
 
 In this system, **LLMs do not directly control physical infrastructure.**
 All irrigation decisions are **deterministic and tool-based.**
@@ -22,7 +22,7 @@ This ensures:
 
 ---
 
-## 🔄 High-Level Flow
+## High-Level Flow
 
 1. Retrieve field metadata (crop + ideal moisture range)
 2. Fetch soil moisture from sensor
@@ -33,7 +33,7 @@ This ensures:
 
 ---
 
-## 🏗 Architecture
+## Architecture
 
 ```
 LangGraph State Machine
@@ -63,7 +63,7 @@ Fetch Sensor Data
 
 ---
 
-## 🧠 Deterministic Core (Safety-Critical Layer)
+## Deterministic Core (Safety-Critical Layer)
 
 All irrigation decisions are **rule-based**.
 
@@ -79,13 +79,13 @@ else:
         decision = DO_NOT_IRRIGATE
 ```
 
-- ✔ No probabilistic reasoning
-- ✔ No LLM influence on control logic
-- ✔ Same input → same output
+- No probabilistic reasoning
+- No LLM influence on control logic
+- Same input → same output
 
 ---
 
-## 🤖 LLM Layer (Explainability & Recommendation)
+## LLM Layer (Explainability & Recommendation)
 
 **Model used:**
 ```
@@ -103,20 +103,20 @@ The LLM:
 
 ---
 
-## 🛠 Tool Layer (Mocked Infrastructure)
+## Tool Layer (Mocked Infrastructure)
 
-### 1️⃣ MockDatabase
+### 1 MockDatabase
 - Returns crop type + moisture thresholds
 - Returns `None` if field not found
 
-### 2️⃣ MockSensorNetwork
+### 2 MockSensorNetwork
 - 20% timeout probability (returns `None`)
 - 5% hardware error probability (`-50.0` or `999.0`)
 - Otherwise returns realistic moisture reading
 
 ---
 
-## 🔁 Fault Tolerance Rules
+## Fault Tolerance Rules
 
 | Scenario | Behavior |
 |---|---|
@@ -128,7 +128,7 @@ The LLM:
 
 ---
 
-## 📦 Output Schema (Strict JSON)
+## Output Schema (Strict JSON)
 
 ```json
 {
@@ -148,7 +148,7 @@ The LLM:
 
 ---
 
-## 🧪 Test Coverage
+## Test Coverage
 
 **Deterministic Tests**
 - Normal Operation
@@ -169,7 +169,7 @@ All tests passed.
 
 ---
 
-## 🔐 Safety Guarantees
+## Safety Guarantees
 
 - Never guess moisture levels
 - Never bypass sensor validation
@@ -180,7 +180,7 @@ All tests passed.
 
 ---
 
-## ▶ Running
+## Running
 
 **Install:**
 ```bash
@@ -199,7 +199,7 @@ python test_agent.py
 
 ---
 
-## 🧩 Why This Design?
+## Why This Design?
 
 | Concern | Solution |
 |---|---|
@@ -211,7 +211,7 @@ python test_agent.py
 
 ---
 
-## 🎯 Summary
+## Summary
 
 This agent demonstrates:
 - Production-grade state orchestration (LangGraph)
